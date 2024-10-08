@@ -1,10 +1,5 @@
 import sys
 import os
-import io
-import time
-import boto3
-import logging
-import pandas as pd
 sys.path.append(os.path.abspath('../../fin_data'))
 from utils.postgresql_conn import get_session
 from utils.postgresql_tables import (FinancialStatementLine, FinancialStatementLineAlias, 
@@ -12,8 +7,15 @@ from utils.postgresql_tables import (FinancialStatementLine, FinancialStatementL
 from utils.helper_functions import get_test_universe_tickers, get_ticker_sector_data
 from utils.date_functions import test_universe_dates
 from utils.postgresql_data_query import get_company_ids
+import pandas as pd
 from datetime import datetime, timedelta
 from sqlalchemy import func, and_, select
+import time
+import logging
+import boto3
+import io
+from contextlib import contextmanager
+from botocore.exceptions import BotoCoreError, ClientError
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +32,16 @@ reverse_sign_tags = ['cor', 'sgna', 'rnd', 'intexp', 'taxexp', 'depamor',
 exclude_ids = {19, 20, 23}  # IDs to be excluded from division
 
 BATCH_SIZE = 100  # Adjust the batch size as needed
+
+# Context manager for session handling
+@contextmanager
+def session_scope():
+    session = get_session()
+    try:
+        yield session
+    finally:
+        session.close()
+
 
 def get_latest_balance_sheet(session, company_ids, data_start, dimension, bs_ids):
     all_values = []
@@ -65,10 +77,15 @@ def get_latest_balance_sheet(session, company_ids, data_start, dimension, bs_ids
             )
         ).distinct()
 
-        results = session.execute(stmt).fetchall()
-        all_values.extend(results)
+        try:
+            results = session.execute(stmt).fetchall()
+            all_values.extend(results)
+        except Exception as e:
+            logger.error(f"Failed to execute balance sheet query: {e}")
+            continue  # Skip this batch in case of query failure
 
     return all_values
+
 
 def get_latest_4_quarters_sum(session, company_ids, data_start, dimension, line_ids):
     all_values = []
@@ -103,10 +120,15 @@ def get_latest_4_quarters_sum(session, company_ids, data_start, dimension, line_
             subquery.c.financial_statement_line_id
         )
 
-        results = session.execute(stmt).fetchall()
-        all_values.extend(results)
+        try:
+            results = session.execute(stmt).fetchall()
+            all_values.extend(results)
+        except Exception as e:
+            logger.error(f"Failed to execute 4 quarters sum query: {e}")
+            continue  # Skip this batch in case of query failure
 
     return all_values
+
 
 def get_latest_capitalization(session, company_ids, data_start):
     all_values = []
@@ -136,10 +158,15 @@ def get_latest_capitalization(session, company_ids, data_start):
             )
         )
 
-        results = session.execute(stmt).fetchall()
-        all_values.extend(results)
+        try:
+            results = session.execute(stmt).fetchall()
+            all_values.extend(results)
+        except Exception as e:
+            logger.error(f"Failed to execute capitalization query: {e}")
+            continue  # Skip this batch in case of query failure
 
     return all_values
+
 
 def ensure_s3_directory_exists(s3_client, bucket, prefix):
     """
@@ -156,17 +183,19 @@ def ensure_s3_directory_exists(s3_client, bucket, prefix):
     else:
         logger.info(f'S3 directory exists: {bucket}/{prefix}')
 
+
 def save_local(final_df, file_name):
     """
     Saves the data locally in the specified path.
     """
-    local_save_path = '/Users/VadimKovshov/Dropbox/INVESTMENTS/EVALUTE/STOCKS/MODEL_OUTPUTS/FUNDAMENTAL_OVER_UNDER/DATA/'
+    local_save_path = os.getenv('LOCAL_SAVE_PATH', '/Users/VadimKovshov/Dropbox/INVESTMENTS/EVALUTE/STOCKS/MODEL_OUTPUTS/FUNDAMENTAL_OVER_UNDER/DATA/')
     file_path = os.path.join(local_save_path, file_name)
     
     # Save the DataFrame locally
     final_df.to_csv(file_path, index=False)
     logger.info(f'Saved locally: {file_path}')
     return file_path
+
 
 def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse_sign_tags=None,
          currency_reporting='USD', dimension='arq', save_to_s3=False, s3_bucket_name=None, s3_output=None):
@@ -177,40 +206,31 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
     Only provide 'end_date' to process data for a single date. 'end_date'=None defaults to most recent date.
     Otherwise, provide both 'start_date' and 'end_date'.
     """
-    # If end_date is not provided, set it to current date
     if not end_date:
         end_date = datetime.now().date()
     if not start_date:
         start_date = end_date
 
-    # Log the date range being used
     logger.info(f"Processing test universe between {start_date} and {end_date}")
 
-    session = get_session()
-    try:
-        start_time = time.time()  # Track time at the beginning
+    with session_scope() as session:
+        start_time = time.time()
 
-        # Get effective dates in the range
         tu_dates = test_universe_dates(start_date=start_date, end_date=end_date)
         logger.info(f'Test universe dates: {", ".join(tu_date.strftime("%Y-%m-%d") for tu_date in tu_dates)}')
 
         final_dfs = []
 
         for tu_date in tu_dates:
-
             logger.info(f"Processing data for {tu_date.strftime('%Y-%m-%d')}")
 
-            # Determine a range of data to query for each date
             data_start = tu_date - timedelta(days=19 * 30)
 
-            # Fetch tickers from the test universe
             tickers = get_test_universe_tickers(session, date=tu_date, currency_reporting=currency_reporting)
             logger.info(f'Tickers in test_universe: {len(tickers)}')
 
-            # Fetch sector data for the tickers
             ticker_sector_data = get_ticker_sector_data(session, tickers)
-            
-            # Optionally exclude 'Financial Services' sector tickers
+
             if exclude_financial_sector:
                 tickers = [
                     ticker for ticker in tickers
@@ -219,11 +239,9 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
 
             logger.info(f'Tickers after sector exclusion: {len(tickers)}')
 
-            # Get company IDs from tickers
             cids_dict = get_company_ids(tickers, return_type='dict')
             company_ids = list(cids_dict.values())
 
-            # Fetch line aliases (for tag, name, and alias)
             line_aliases = session.query(
                 FinancialStatementLine.id,
                 FinancialStatementLine.tag,
@@ -236,13 +254,8 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
 
             line_details = {x[0]: [x[1], x[2], x[3]] for x in line_aliases}
 
-            # Fetch market capitalization data
             market_cap_values = get_latest_capitalization(session, company_ids, data_start)
-
-            # Fetch balance sheet data using bs_ids as an argument
             balance_sheet_values = get_latest_balance_sheet(session, company_ids, data_start, dimension, bs_ids)
-
-            # Fetch income statement and cash flow statement data
             income_values = get_latest_4_quarters_sum(session, company_ids, data_start, dimension, is_ids)
             cash_flow_values = get_latest_4_quarters_sum(session, company_ids, data_start, dimension, cf_ids)
 
@@ -252,7 +265,6 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
                 data = []
                 processed_line_ids = set()
 
-                # Add market cap to data
                 market_cap = next((val[1] for val in market_cap_values if val[0] == cid), None)
                 if market_cap is not None:
                     data.append(['market_cap', market_cap])
@@ -281,64 +293,52 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
                 df = pd.DataFrame(data, columns=['tag', 'value'])
                 df = df.set_index('tag').transpose()
 
-                # Reverse signs for specified tags
                 if reverse_sign_tags:
                     df.loc[:, df.columns.isin(reverse_sign_tags)] *= -1
 
-                # Only append if 'caldate' is not None
                 if df['caldate'].notnull().all():
                     all_data.append(df)
 
-            if all_data:  # Ensure all_data is not empty before concatenating
-                final_df = pd.concat(all_data, axis=0, ignore_index=True)
+        if all_data:
+            final_df = pd.concat(all_data, axis=0, ignore_index=True)
 
-                # Merge sector data with final_df
-                sector_df = pd.DataFrame(list(ticker_sector_data.items()), columns=['ticker', 'sector'])
-                final_df = final_df.merge(sector_df, on='ticker', how='left')
+            sector_df = pd.DataFrame(list(ticker_sector_data.items()), columns=['ticker', 'sector'])
+            final_df = final_df.merge(sector_df, on='ticker', how='left')
 
-                final_dfs.append(final_df)
+            final_dfs.append(final_df)
 
-                # Save the final data file for each date
-                file_name = f'aggregated_fin_statements_{tu_date.strftime("%Y%m%d")}.csv'
+            file_name = f'aggregated_fin_statements_{tu_date.strftime("%Y%m%d")}.csv'
 
-                # Upload to S3
-                if save_to_s3:
-                    s3_output_path = s3_output if s3_output else 'machine-learning/model_output/fundamental/ts_regressor/data/'
-                    
-                    # Ensure the S3 directory exists or create it, Construct full S3 path
-                    s3 = boto3.client('s3', region_name='eu-central-1')
-                    ensure_s3_directory_exists(s3, s3_bucket_name, s3_output_path)
-                    s3_data_path = f"{s3_output_path}{file_name}"
-                    
-                    # Upload data to S3
-                    csv_buffer = io.StringIO()  # Create an in-memory string buffer
-                    final_df.to_csv(csv_buffer, index=False)
-                    csv_buffer.seek(0)  # Reset the buffer's position to the beginning
+            if save_to_s3:
+                s3_output_path = s3_output if s3_output else 'machine-learning/model_output/fundamental/ts_regressor/data/'
+                
+                s3 = boto3.client('s3', region_name='eu-central-1')
+                ensure_s3_directory_exists(s3, s3_bucket_name, s3_output_path)
+                s3_data_path = os.path.join(s3_output_path, file_name)
+                
+                csv_buffer = io.StringIO()
+                final_df.to_csv(csv_buffer, index=False)
+                csv_buffer.seek(0)
 
-                    try:
-                        s3.put_object(Bucket=s3_bucket_name, Key=s3_data_path, Body=csv_buffer.getvalue())
-                        logger.info(f'File uploaded to S3: {s3_bucket_name}/{s3_data_path}, {time.time() - start_time} seconds')
-                    except Exception as e:
-                        logger.error(f"Failed to upload to S3: {e}")
-                else:
-                    # Save locally
-                    save_local(final_df, file_name)
+                try:
+                    s3.put_object(Bucket=s3_bucket_name, Key=s3_data_path, Body=csv_buffer.getvalue())
+                    logger.info(f'File uploaded to S3: {s3_bucket_name}/{s3_data_path}, {time.time() - start_time} seconds')
+                except (BotoCoreError, ClientError) as e:
+                    logger.error(f"Failed to upload to S3: {e}")
             else:
-                logger.warning(f"No data to process for date: {tu_date.strftime('%Y-%m-%d')}")
+                save_local(final_df, file_name)
+        else:
+            logger.warning(f"No data to process for date: {tu_date.strftime('%Y-%m-%d')}")
 
-            logger.info(f"Completed processing for all dates between {start_date} and {end_date}.")
-
-    finally:
-        end_time = time.time()
-        session.close()  # Ensure the session is always closed
-        logger.info(f"Session closed. Total time: {end_time - start_time} seconds")
+        logger.info(f"Completed processing for all dates between {start_date} and {end_date}.")
 
     return final_dfs if final_dfs else None
+
 
 if __name__ == '__main__':
     start_time = time.time()
 
-    extract = main(start_date='2024-08-01', end_date='2024-08-31', reverse_sign_tags=reverse_sign_tags, 
-                   save_to_s3=True, s3_bucket_name='machine-learning-evlt', s3_output=None)
+    extract = main(start_date='2024-10-03', end_date='2024-10-03', reverse_sign_tags=reverse_sign_tags, 
+                   save_to_s3=False, s3_bucket_name='machine-learning-evlt', s3_output=None)
     
     logger.info(f'Total time: {time.time() - start_time} seconds')
