@@ -309,14 +309,14 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
 
             final_dfs.append(final_df)
 
-            file_name = f'aggregated_fin_statements_{start_date.strftime("%Y%m%d")}_{end_date.strftime("%Y%m%d")}.csv'
+            file_name = f'aggregated_fin_statements_{tu_date.strftime("%Y%m%d")}.csv'
 
             if save_to_s3:
                 s3_output_path = s3_output if s3_output else 'machine-learning/model_output/fundamental/ts_regressor/data/'
                 
                 s3 = boto3.client('s3', region_name='eu-central-1')
                 ensure_s3_directory_exists(s3, s3_bucket_name, s3_output_path)
-                s3_data_path = f"{s3_output_path}{file_name}"  # Use forward slashes for S3 paths
+                s3_data_path = os.path.join(s3_output_path, file_name)
                 
                 csv_buffer = io.StringIO()
                 final_df.to_csv(csv_buffer, index=False)
