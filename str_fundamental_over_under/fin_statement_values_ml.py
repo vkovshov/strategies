@@ -31,7 +31,7 @@ reverse_sign_tags = ['cor', 'sgna', 'rnd', 'intexp', 'taxexp', 'depamor',
 
 exclude_ids = {19, 20, 23}  # IDs to be excluded from division
 
-BATCH_SIZE = 100  # Adjust the batch size as needed
+BATCH_SIZE = 200  # Adjust the batch size as needed
 
 # Context manager for session handling
 @contextmanager
@@ -39,6 +39,11 @@ def session_scope():
     session = get_session()
     try:
         yield session
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Session rollback because of exception: {e}")
+        raise
     finally:
         session.close()
 
@@ -203,6 +208,7 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
     Processes financial statements for all companies in a 'test_universe' for each 'effective_date' 
     and saves the data either locally or to an S3 bucket for each date in the range.
     """
+
     if not end_date:
         end_date = datetime.now().date()
     if not start_date:
@@ -210,22 +216,32 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
 
     logger.info(f"Processing test universe between {start_date} and {end_date}")
 
+    tu_dates = test_universe_dates(start_date=start_date, end_date=end_date)
+    if not tu_dates:
+        logger.warning(f"No test universe dates found between {start_date} and {end_date}.")
+        return None
+
+    logger.info(f'Test universe dates: {", ".join(tu_date.strftime("%Y-%m-%d") for tu_date in tu_dates)}')
+
+    # Move line_aliases query outside the loop if it doesn't depend on tu_date
     with session_scope() as session:
-        start_time = time.time()
+        line_aliases = session.query(
+            FinancialStatementLine.id,
+            FinancialStatementLine.tag,
+            FinancialStatementLine.name,
+            FinancialStatementLineAlias.alias
+        ).join(
+            FinancialStatementLineAlias,
+            FinancialStatementLine.id == FinancialStatementLineAlias.financial_statement_line_id
+        ).all()
 
-        tu_dates = test_universe_dates(start_date=start_date, end_date=end_date)
-        if not tu_dates:
-            logger.warning(f"No test universe dates found between {start_date} and {end_date}.")
-            return None
+    line_details = {x[0]: [x[1], x[2], x[3]] for x in line_aliases}
 
-        logger.info(f'Test universe dates: {", ".join(tu_date.strftime("%Y-%m-%d") for tu_date in tu_dates)}')
+    for tu_date in tu_dates:
+        logger.info(f"Processing data for {tu_date.strftime('%Y-%m-%d')}")
+        start_time = time.time()  # Start timer for this tu_date
 
-        final_dfs = []
-        all_data = []  # Initialize all_data only once before the loop
-
-        for tu_date in tu_dates:
-            logger.info(f"Processing data for {tu_date.strftime('%Y-%m-%d')}")
-
+        with session_scope() as session:
             data_start = tu_date - timedelta(days=19 * 30)
 
             tickers = get_test_universe_tickers(session, date=tu_date, currency_reporting=currency_reporting)
@@ -241,25 +257,15 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
 
             logger.info(f'Tickers after sector exclusion: {len(tickers)}')
 
-            cids_dict = get_company_ids(tickers, return_type='dict')
+            cids_dict = get_company_ids(tickers, session, return_type='dict', batch_size=BATCH_SIZE)
             company_ids = list(cids_dict.values())
-
-            line_aliases = session.query(
-                FinancialStatementLine.id,
-                FinancialStatementLine.tag,
-                FinancialStatementLine.name,
-                FinancialStatementLineAlias.alias
-            ).join(
-                FinancialStatementLineAlias,
-                FinancialStatementLine.id == FinancialStatementLineAlias.financial_statement_line_id
-            ).all()
-
-            line_details = {x[0]: [x[1], x[2], x[3]] for x in line_aliases}
 
             market_cap_values = get_latest_capitalization(session, company_ids, data_start)
             balance_sheet_values = get_latest_balance_sheet(session, company_ids, data_start, dimension, bs_ids)
             income_values = get_latest_4_quarters_sum(session, company_ids, data_start, dimension, is_ids)
             cash_flow_values = get_latest_4_quarters_sum(session, company_ids, data_start, dimension, cf_ids)
+
+            all_data = []  # Reset all_data for each tu_date
 
             for ticker, cid in cids_dict.items():
                 data = []
@@ -284,7 +290,7 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
                             sum_value /= 1000000
                         data.append([line_details[fsl_id][0], sum_value])
                         processed_line_ids.add(fsl_id)
-                
+
                 calendar_date = next((val[2] for val in balance_sheet_values if val[0] == cid), None)
                 data.insert(0, ['caldate', calendar_date])
                 data.insert(0, ['ticker', ticker])
@@ -301,46 +307,47 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
                 if df['caldate'].notnull().all():
                     all_data.append(df)
 
-        if all_data:
-            final_df = pd.concat(all_data, axis=0, ignore_index=True)
+            if all_data:
+                final_df = pd.concat(all_data, axis=0, ignore_index=True)
 
-            sector_df = pd.DataFrame(list(ticker_sector_data.items()), columns=['ticker', 'sector'])
-            final_df = final_df.merge(sector_df, on='ticker', how='left')
+                sector_df = pd.DataFrame(list(ticker_sector_data.items()), columns=['ticker', 'sector'])
+                final_df = final_df.merge(sector_df, on='ticker', how='left')
 
-            final_dfs.append(final_df)
+                file_name = f'aggregated_fin_statements_{tu_date.strftime("%Y%m%d")}.csv'
 
-            file_name = f'aggregated_fin_statements_{tu_date.strftime("%Y%m%d")}.csv'
+                if save_to_s3:
+                    s3_output_path = s3_output if s3_output else 'machine-learning/model_output/fundamental/ts_regressor/data/'
 
-            if save_to_s3:
-                s3_output_path = s3_output if s3_output else 'machine-learning/model_output/fundamental/ts_regressor/data/'
-                
-                s3 = boto3.client('s3', region_name='eu-central-1')
-                ensure_s3_directory_exists(s3, s3_bucket_name, s3_output_path)
-                s3_data_path = os.path.join(s3_output_path, file_name)
-                
-                csv_buffer = io.StringIO()
-                final_df.to_csv(csv_buffer, index=False)
-                csv_buffer.seek(0)
+                    s3 = boto3.client('s3', region_name='eu-central-1')
+                    ensure_s3_directory_exists(s3, s3_bucket_name, s3_output_path)
+                    s3_data_path = os.path.join(s3_output_path, file_name)
 
-                try:
-                    s3.put_object(Bucket=s3_bucket_name, Key=s3_data_path, Body=csv_buffer.getvalue())
-                    logger.info(f'File uploaded to S3: {s3_bucket_name}/{s3_data_path}, {time.time() - start_time} seconds')
-                except (BotoCoreError, ClientError) as e:
-                    logger.error(f"Failed to upload to S3: {e}")
+                    csv_buffer = io.StringIO()
+                    final_df.to_csv(csv_buffer, index=False)
+                    csv_buffer.seek(0)
+
+                    try:
+                        s3.put_object(Bucket=s3_bucket_name, Key=s3_data_path, Body=csv_buffer.getvalue())
+                        logger.info(f'File uploaded to S3: {s3_bucket_name}/{s3_data_path}')
+                    except (BotoCoreError, ClientError) as e:
+                        logger.error(f"Failed to upload to S3: {e}")
+                else:
+                    save_local(final_df, file_name)
             else:
-                save_local(final_df, file_name)
-        else:
-            logger.warning(f"No data to process between {start_date} and {end_date}.")
+                logger.warning(f"No data to process for date {tu_date.strftime('%Y-%m-%d')}.")
 
-        logger.info(f"Completed processing for all dates between {start_date} and {end_date}.")
+        logger.info(f"Completed processing for {tu_date.strftime('%Y-%m-%d')}.")
+        logger.info(f'Total time for {tu_date.strftime("%Y-%m-%d")}: {round(time.time() - start_time, 2)} seconds')
 
-    return final_dfs if final_dfs else None
+    logger.info(f"Completed processing for all dates between {start_date} and {end_date}")
+
+    return None
 
 
 if __name__ == '__main__':
     start_time = time.time()
 
-    extract = main(start_date='2024-08-03', end_date='2024-10-03', reverse_sign_tags=reverse_sign_tags, 
+    extract = main(start_date='2024-09-21', end_date='2024-09-27', reverse_sign_tags=reverse_sign_tags, 
                    save_to_s3=False, s3_bucket_name='machine-learning-evlt', s3_output=None)
     
-    logger.info(f'Total time: {time.time() - start_time} seconds')
+    logger.info(f'Total time: {round(time.time() - start_time, 2)} seconds')
