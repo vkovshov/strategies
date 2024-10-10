@@ -48,7 +48,7 @@ def session_scope():
         session.close()
 
 
-def get_latest_balance_sheet(session, company_ids, data_start, dimension, bs_ids):
+def get_latest_balance_sheet(session, company_ids, data_start, tu_date, dimension, bs_ids):
     all_values = []
     for i in range(0, len(company_ids), BATCH_SIZE):
         batch_ids = company_ids[i:i + BATCH_SIZE]
@@ -61,7 +61,8 @@ def get_latest_balance_sheet(session, company_ids, data_start, dimension, bs_ids
                 FinancialStatementFact.company_id.in_(batch_ids),
                 FinancialStatementFact.financial_statement_line_id.in_(bs_ids),
                 FinancialStatementFact.dimension == dimension,
-                FinancialStatementFact.calendar_date >= data_start
+                FinancialStatementFact.calendar_date >= data_start,
+                FinancialStatementFact.calendar_date <= tu_date
             )
         ).group_by(
             FinancialStatementFact.company_id,
@@ -92,7 +93,7 @@ def get_latest_balance_sheet(session, company_ids, data_start, dimension, bs_ids
     return all_values
 
 
-def get_latest_4_quarters_sum(session, company_ids, data_start, dimension, line_ids):
+def get_latest_4_quarters_sum(session, company_ids, data_start, tu_date, dimension, line_ids):
     all_values = []
     for i in range(0, len(company_ids), BATCH_SIZE):
         batch_ids = company_ids[i:i + BATCH_SIZE]
@@ -110,7 +111,8 @@ def get_latest_4_quarters_sum(session, company_ids, data_start, dimension, line_
                 FinancialStatementFact.company_id.in_(batch_ids),
                 FinancialStatementFact.financial_statement_line_id.in_(line_ids),
                 FinancialStatementFact.dimension == dimension,
-                FinancialStatementFact.calendar_date >= data_start
+                FinancialStatementFact.calendar_date >= data_start,
+                FinancialStatementFact.calendar_date <= tu_date
             )
         ).subquery()
 
@@ -135,7 +137,7 @@ def get_latest_4_quarters_sum(session, company_ids, data_start, dimension, line_
     return all_values
 
 
-def get_latest_capitalization(session, company_ids, data_start):
+def get_latest_capitalization(session, company_ids, data_start, tu_date):
     all_values = []
     for i in range(0, len(company_ids), BATCH_SIZE):
         batch_ids = company_ids[i:i + BATCH_SIZE]
@@ -145,7 +147,8 @@ def get_latest_capitalization(session, company_ids, data_start):
         ).filter(
             and_(
                 CompanyDailyMetric.company_id.in_(batch_ids),
-                CompanyDailyMetric.date >= data_start
+                CompanyDailyMetric.date >= data_start,
+                CompanyDailyMetric.date <= tu_date
             )
         ).group_by(
             CompanyDailyMetric.company_id
@@ -255,15 +258,17 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
                     if ticker_sector_data.get(ticker) and ticker_sector_data.get(ticker).strip().lower() != 'financial services'
                 ]
 
-            logger.info(f'Tickers after sector exclusion: {len(tickers)}')
+            # tickers = tickers[:50] # Limit the number of tickers for testing
+
+            logger.info(f'Tickers after exclusion: {len(tickers)}')
 
             cids_dict = get_company_ids(tickers, session, return_type='dict', batch_size=BATCH_SIZE)
             company_ids = list(cids_dict.values())
 
-            market_cap_values = get_latest_capitalization(session, company_ids, data_start)
-            balance_sheet_values = get_latest_balance_sheet(session, company_ids, data_start, dimension, bs_ids)
-            income_values = get_latest_4_quarters_sum(session, company_ids, data_start, dimension, is_ids)
-            cash_flow_values = get_latest_4_quarters_sum(session, company_ids, data_start, dimension, cf_ids)
+            market_cap_values = get_latest_capitalization(session, company_ids, data_start, tu_date)
+            balance_sheet_values = get_latest_balance_sheet(session, company_ids, data_start, tu_date, dimension, bs_ids)
+            income_values = get_latest_4_quarters_sum(session, company_ids, data_start, tu_date, dimension, is_ids)
+            cash_flow_values = get_latest_4_quarters_sum(session, company_ids, data_start, tu_date, dimension, cf_ids)
 
             all_data = []  # Reset all_data for each tu_date
 
@@ -316,7 +321,7 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
                 file_name = f'aggregated_fin_statements_{tu_date.strftime("%Y%m%d")}.csv'
 
                 if save_to_s3:
-                    s3_output_path = s3_output if s3_output else 'machine-learning/model_output/fundamental/ts_regressor/data/'
+                    s3_output_path = s3_output if s3_output else 'machine_learning_evlt/model_output/fundamental/ts_regressor/data/'
 
                     s3 = boto3.client('s3', region_name='eu-central-1')
                     ensure_s3_directory_exists(s3, s3_bucket_name, s3_output_path)
@@ -347,7 +352,7 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
 if __name__ == '__main__':
     start_time = time.time()
 
-    extract = main(start_date='2024-09-21', end_date='2024-09-27', reverse_sign_tags=reverse_sign_tags, 
+    extract = main(start_date='2023-02-01', end_date='2023-02-08', reverse_sign_tags=reverse_sign_tags, 
                    save_to_s3=False, s3_bucket_name='machine-learning-evlt', s3_output=None)
     
     logger.info(f'Total time: {round(time.time() - start_time, 2)} seconds')
