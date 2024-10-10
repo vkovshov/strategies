@@ -258,7 +258,7 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
                     if ticker_sector_data.get(ticker) and ticker_sector_data.get(ticker).strip().lower() != 'financial services'
                 ]
 
-            # tickers = tickers[:50] # Limit the number of tickers for testing
+            #tickers = tickers[:50] # Limit the number of tickers for testing
 
             logger.info(f'Tickers after exclusion: {len(tickers)}')
 
@@ -321,7 +321,7 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
                 file_name = f'aggregated_fin_statements_{tu_date.strftime("%Y%m%d")}.csv'
 
                 if save_to_s3:
-                    s3_output_path = s3_output if s3_output else 'machine_learning_evlt/model_output/fundamental/ts_regressor/data/'
+                    s3_output_path = s3_output if s3_output else 'model_output/fundamental/ts_regressor/data/'
 
                     s3 = boto3.client('s3', region_name='eu-central-1')
                     ensure_s3_directory_exists(s3, s3_bucket_name, s3_output_path)
