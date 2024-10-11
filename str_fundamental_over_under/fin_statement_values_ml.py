@@ -1,6 +1,6 @@
 import sys
 import os
-sys.path.append(os.path.abspath('../../fin_data'))
+sys.path.append(os.path.abspath('fin_data'))
 from utils.postgresql_conn import get_session
 from utils.postgresql_tables import (FinancialStatementLine, FinancialStatementLineAlias, 
                                      FinancialStatementFact, CompanyDailyMetric)
@@ -258,7 +258,7 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
                     if ticker_sector_data.get(ticker) and ticker_sector_data.get(ticker).strip().lower() != 'financial services'
                 ]
 
-            #tickers = tickers[:50] # Limit the number of tickers for testing
+            # tickers = tickers[:50] # Limit the number of tickers for testing
 
             logger.info(f'Tickers after exclusion: {len(tickers)}')
 
@@ -352,7 +352,7 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
 if __name__ == '__main__':
     start_time = time.time()
 
-    extract = main(start_date='2023-02-01', end_date='2023-02-08', reverse_sign_tags=reverse_sign_tags, 
-                   save_to_s3=False, s3_bucket_name='machine-learning-evlt', s3_output=None)
+    main(start_date='2015-01-01', end_date='2015-12-31', reverse_sign_tags=reverse_sign_tags, 
+                   save_to_s3=True, s3_bucket_name='machine-learning-evlt', s3_output=None)
     
     logger.info(f'Total time: {round(time.time() - start_time, 2)} seconds')
