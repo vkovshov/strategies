@@ -18,7 +18,22 @@ from contextlib import contextmanager
 from botocore.exceptions import BotoCoreError, ClientError
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+dt_now = datetime.now()
+log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', dt_now.strftime("%Y-%m"))
+
+if not os.path.exists(log_folder):
+    os.makedirs(log_folder)
+
+# Configure logging
+log_file = os.path.join(log_folder, f'update-{dt_now.strftime("%Y-%m-%d")}.log')
+logging.basicConfig(
+    filename=log_file,
+    filemode="a",
+    format="%(asctime)s,%(msecs)d %(name)s %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+    level=logging.INFO
+)
+
 logger = logging.getLogger(__name__)
 
 # Define the line IDs for balance sheet, cash flow, and income statement
