@@ -371,4 +371,7 @@ if __name__ == '__main__':
     main(start_date='2024-01-01', end_date=dt.datetime.now().date().strftime('%Y-%m-%d'), reverse_sign_tags=reverse_sign_tags, 
                    save_to_s3=True, s3_bucket_name='machine-learning-evlt', s3_output=None)
     
+    # main(start_date='2024-01-01', end_date='2024-11-13', reverse_sign_tags=reverse_sign_tags, 
+    #                save_to_s3=True, s3_bucket_name='machine-learning-evlt', s3_output=None)
+
     logger.info(f'Total time: {round(time.time() - start_time, 2)} seconds')
