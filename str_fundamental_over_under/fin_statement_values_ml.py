@@ -1,6 +1,6 @@
 import sys
 import os
-sys.path.append(os.path.abspath('fin_data'))
+sys.path.append(os.path.abspath('../../fin_data'))
 from utils.postgresql_conn import get_session
 from utils.postgresql_tables import (FinancialStatementLine, FinancialStatementLineAlias, 
                                      FinancialStatementFact, CompanyDailyMetric)
