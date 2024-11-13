@@ -368,7 +368,7 @@ def main(start_date=None, end_date=None, exclude_financial_sector=False, reverse
 if __name__ == '__main__':
     start_time = time.time()
 
-    main(start_date='2015-01-01', end_date=dt.datetime.now().date().strftime('%Y-%m-%d'), reverse_sign_tags=reverse_sign_tags, 
+    main(start_date='2024-01-01', end_date=dt.datetime.now().date().strftime('%Y-%m-%d'), reverse_sign_tags=reverse_sign_tags, 
                    save_to_s3=True, s3_bucket_name='machine-learning-evlt', s3_output=None)
     
     logger.info(f'Total time: {round(time.time() - start_time, 2)} seconds')
