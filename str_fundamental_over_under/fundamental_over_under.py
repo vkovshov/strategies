@@ -3,7 +3,6 @@ import sys
 import time
 import logging
 import datetime as dt
-from datetime import datetime
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -147,9 +146,9 @@ def main_calcs(data=None, acc_variables=None, random_seed=42, samples=1000, samp
 if __name__ == '__main__':
     start_time = time.time()
 
-    # Define the start and end bucket dates as datetime objects
-    start_bucket_date = datetime(2024, 1, 1)
-    end_bucket_date = datetime(2024, 11, 8)
+    # Define the start and end bucket dates using dt.datetime
+    start_bucket_date = dt.datetime(2023, 1, 1).date()
+    end_bucket_date = dt.datetime(2023, 12, 31).date()
 
     s3 = get_aws_client('s3')
 
